@@ -1,62 +1,59 @@
+from sklearn.linear_model import LinearRegression
 import numpy as np
 import netCDF4
-import reverse_geocode
+from matplotlib import pyplot as plt
+from joblib import Parallel, delayed
+import multiprocessing
 
-initial_year = 1998
-initial_month = str(1).zfill(2)
-fp=f'monthly/V5GL04.HybridPM25c_0p10.Asia.{initial_year}{initial_month}-{initial_year}{initial_month}.nc'
-nc = netCDF4.Dataset(fp)
+all_data = np.array([netCDF4.Dataset(f"formatted_monthly/{i}.nc")["GWRPM25"] for i in range(300)])
+lat = netCDF4.Dataset(f"formatted_monthly/{0}.nc")["lat"]
+lon = netCDF4.Dataset(f"formatted_monthly/{0}.nc")["lon"]
+error = np.zeros(300)
+cnt = 0
 
-lat = np.round(nc.variables["lat"], 2)
-lon = np.round(nc.variables["lon"], 2)
+def train_and_compute_error(month, i, j):
+    if np.isnan(all_data[month, i, j]):
+        return
+    global cnt
+    cnt += 1
+    current_data = (np.array(list(enumerate(all_data[month::12, i, j]))))
+    training_data_length = int(len(current_data) * 0.5)
+    np.random.shuffle(current_data)
+    X = [[a] for a in (current_data[:training_data_length, 0])]
+    y = [[a] for a in (current_data[:training_data_length, 1])]
+    reg = LinearRegression().fit(X, y)
+    predictions = reg.predict([[data_point] for data_point in np.arange(len(current_data))]).flatten()
+    # print(len(predictions))
+    global error
+    # error += ((predictions - current_data[:, 1]) ** 2)
+    for i, e in enumerate(((predictions - current_data[:, 1]) ** 2)):
+        error[12 * i + month] += e
 
-lat_mask = (lat > 8.06666667) & (lat < 37.1) # latitude of india
-lon_mask = (lon > 68.1166667) & (lon < 97.4166667) # longitude of india
+print("Start", multiprocessing.cpu_count())
+Parallel(n_jobs=multiprocessing.cpu_count(), require='sharedmem')(delayed(train_and_compute_error)(month, i, j) for i in range(len(lat)) for j in range(len(lon)) for month in range(12))
+error /= cnt/12
+error = np.sqrt(error)
+print_error(error)
 
-lat = lat[lat_mask]
-lon = lon[lon_mask]
-
-nc.close()
-
-def read_and_format_data(file_idx):
-    year = 1998 + int(file_idx/12)
-    month = str(file_idx % 12 + 1).zfill(2)
-    fp=f'monthly/V5GL04.HybridPM25c_0p10.Asia.{year}{month}-{year}{month}.nc'
-    nc = netCDF4.Dataset(fp)
-    data = nc.variables["GWRPM25"][lat_mask, lon_mask]
-
+def something(): 
     for i, _lat in enumerate(lat):
         for j, _lon in enumerate(lon):
-            coords = (_lat, _lon),
-            obj = reverse_geocode.search(coords)
-            if obj[0]['country'] != 'India':
-                data[i][j] = np.nan
-
-    nc.close()
-    return data
-
-for i in range(0, 300):
-    print(f'Writing file {i} of 300')
+            for month in range(12):
+                if not np.isnan(all_data[month, i, j]):
+                    train_and_compute_error(month, i, j)
+                    return
+                    current_data = (np.array(list(enumerate(all_data[month::12, i, j]))))
+                    np.random.shuffle(current_data)
+                    training_data_length = int(len(current_data) * 0.2)
+                    y = [[a] for a in (current_data[:training_data_length, 1])]
+                    X = [[a] for a in (current_data[:training_data_length, 0])]
+                    reg = LinearRegression().fit(X, y)
     
-    ncfile = netCDF4.Dataset(f'formatted_monthly/{i}.nc', mode='w', format='NETCDF4_CLASSIC')
-    
-    lat_dim = ncfile.createDimension('lat', len(lat))     # latitude axis
-    lon_dim = ncfile.createDimension('lon', len(lon))    # longitude axis
-    
-    lat_var = ncfile.createVariable('lat', np.float64, ('lat',))
-    lat_var.units = 'degrees_north'
-    lat_var.long_name = 'latitude'
-    
-    lon_var = ncfile.createVariable('lon', np.float64, ('lon',))
-    lon_var.units = 'degrees_east'
-    lon_var.long_name = 'longitude'
-    
-    GWRPM25 = ncfile.createVariable('GWRPM25', np.float32, ('lat','lon')) 
-    
-    lat_var[:] = lat
-    lon_var[:] = lon
-    GWRPM25[:,:] = read_and_format_data(i)
-    
-    ncfile.close()
-
-print("Done!")
+                    # print(reg.predict([[data_point] for data_point in np.arange(len(all_data))]).flatten())
+                    plt.figure()
+                    plt.plot(all_data[month::12, i, j])
+                    plt.plot(reg.predict([[data_point] for data_point in np.arange(len(current_data))]).flatten())
+                    plt.show()
+                    return
+                    
+# something()
